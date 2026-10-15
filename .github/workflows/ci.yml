@@ -61,7 +61,7 @@ jobs:
       - name: 构建并校验声明清单
         run: |
           npm run build
-          node ../../scripts/check-manifest.mjs .
+          node ../scripts/check-manifest.mjs .
 
       - name: 测试
         run: npm test
