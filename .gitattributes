@@ -1,0 +1,2 @@
+# 仓库里一律存 LF：CI 跑在 Linux 上，Windows 检出时不要让 autocrlf 把 blob 变成 CRLF
+* text=auto eol=lf

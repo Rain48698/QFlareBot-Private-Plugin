@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [jrys, demo]
+    defaults:
+      run:
+        working-directory: plugin/${{ matrix.plugin }}
+    steps:
+      # 第三方 action 一律钉到 commit sha（tag 可以被改指向），行尾注释是对应的版本。
+      # 与本地开发同一布局：QFlareBot 与插件仓库并排，devDependencies 里的
+      # file:../../QFlareBot/... 从 plugin/<插件>/ 往上两级正好指到它
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: plugin
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: QFlareBot/QFlareBot
+          path: QFlareBot
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: QFlareBot/package.json
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # SDK 与 plugin-cli 不发 npm，只能从 QFlareBot 源码构建
+      - name: 构建 SDK 与 plugin-cli
+        working-directory: QFlareBot
+        run: |
+          pnpm install --frozen-lockfile --filter '@qqbot/plugin-cli...'
+          pnpm --filter '@qqbot/plugin-cli...' build
+
+      - name: 安装依赖
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      # 声明清单是面板安装时读的那份，与源码对不上，安装会被拒
+      - name: 构建并校验声明清单
+        run: |
+          npm run build
+          node ../../scripts/check-manifest.mjs .
+
+      - name: 测试
+        run: npm test

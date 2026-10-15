@@ -1,0 +1,58 @@
+{
+  "name": "jrys",
+  "version": "0.1.0",
+  "apiVersion": 3,
+  "permissions": [
+    "db",
+    "kv"
+  ],
+  "depends": {},
+  "conflicts": [],
+  "commands": [
+    {
+      "name": "jrys",
+      "description": "查看今日运势",
+      "usage": "/jrys [@群友]",
+      "aliases": [
+        "运势"
+      ]
+    }
+  ],
+  "regex": [],
+  "events": [],
+  "buttons": [],
+  "cron": [],
+  "routes": [],
+  "hasMiddleware": false,
+  "services": [],
+  "durableObjects": [],
+  "displayName": "今日运势",
+  "description": "群里发 /jrys 看今天的运势，支持 @ 群友帮看",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "timezoneOffset": {
+        "type": "number",
+        "title": "日期时区（UTC 偏移小时）",
+        "description": "决定「今天」从几点开始。北京时间填 `8`，UTC 填 `0`。",
+        "default": 8,
+        "minimum": -12,
+        "maximum": 14
+      },
+      "atTarget": {
+        "type": "boolean",
+        "title": "帮别人看时 @ 对方",
+        "description": "关掉就只写名字，不 @ 人。",
+        "default": true
+      }
+    },
+    "required": [
+      "timezoneOffset",
+      "atTarget"
+    ]
+  },
+  "defaultConfig": {
+    "timezoneOffset": 8,
+    "atTarget": true
+  }
+}

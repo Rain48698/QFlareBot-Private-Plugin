@@ -1,0 +1,100 @@
+{
+  "name": "demo",
+  "version": "0.2.0",
+  "apiVersion": 3,
+  "permissions": [
+    "kv",
+    "db"
+  ],
+  "depends": {},
+  "conflicts": [],
+  "commands": [
+    {
+      "name": "hello"
+    },
+    {
+      "name": "count",
+      "description": "数到 N",
+      "usage": "/count [N]",
+      "aliases": [
+        "数数"
+      ]
+    },
+    {
+      "name": "sign",
+      "description": "每日签到拿积分",
+      "usage": "/sign",
+      "aliases": [
+        "签到"
+      ]
+    },
+    {
+      "name": "points",
+      "description": "查看自己的积分",
+      "usage": "/points",
+      "aliases": [
+        "积分"
+      ]
+    },
+    {
+      "name": "rank",
+      "description": "本群积分排行榜",
+      "usage": "/rank",
+      "aliases": [
+        "排行"
+      ]
+    },
+    {
+      "name": "sign reset",
+      "description": "清掉某人的签到记录",
+      "usage": "/sign reset @某人",
+      "permission": "group_admin",
+      "aliases": [
+        "签到 reset"
+      ]
+    }
+  ],
+  "regex": [],
+  "events": [],
+  "buttons": [],
+  "cron": [],
+  "routes": [],
+  "hasMiddleware": false,
+  "services": [],
+  "durableObjects": [],
+  "displayName": "演示",
+  "description": "测试用插件",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "title": "问候语",
+        "default": "你好"
+      },
+      "pointsPerSign": {
+        "type": "integer",
+        "title": "每次签到积分",
+        "minimum": 1,
+        "maximum": 1000,
+        "default": 10
+      },
+      "utcOffset": {
+        "type": "integer",
+        "title": "时区偏移（小时）",
+        "description": "签到日按 UTC+该值 计算，默认 8（北京时间 0 点换日）",
+        "minimum": -12,
+        "maximum": 14,
+        "default": 8
+      }
+    },
+    "required": [
+      "greeting"
+    ]
+  },
+  "defaultConfig": {
+    "greeting": "你好",
+    "pointsPerSign": 10,
+    "utcOffset": 8
+  }
+}
