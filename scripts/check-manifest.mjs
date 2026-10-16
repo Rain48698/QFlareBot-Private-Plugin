@@ -40,7 +40,12 @@ try {
 }
 
 if (stable(declared) === stable(built)) {
+  // 顺带把清单内容打出来：这个脚本只保证两份清单一致，不保证内容是你要的。
+  // 从模板复制来的插件如果忘了重写 src/index.ts，命令列表会原样留着模板的东西——只有打出来才看得见。
+  const cmds = (declared.commands ?? []).map((c) => `/${c.name}`).join('、') || '（没有命令）'
   console.log(`✓ ${label}：声明清单与源码一致`)
+  console.log(`    name=${declared.name} version=${declared.version} apiVersion=${declared.apiVersion ?? '(未写)'}`)
+  console.log(`    命令：${cmds}`)
   process.exit(0)
 }
 

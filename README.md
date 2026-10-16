@@ -33,10 +33,13 @@ ls -d D:/code/QFlareBot-Private-Plugin               # 本仓库检出
 git clone https://github.com/Rain48698/QFlareBot-Private-Plugin D:/code/QFlareBot-Private-Plugin
 git clone https://github.com/QFlareBot/QFlareBot D:/code/QFlareBot
 
-# QFlareBot 检出只需初始化一次：构建 @qqbot/plugin-cli（它提供 qqbot-plugin 命令；@qqbot/sdk 不用构建）
+# QFlareBot 检出只需初始化一次。下面这条有输出就说明已经好了，跳过
+ls -d D:/code/QFlareBot/packages/plugin-cli/dist/cli.js
 cd D:/code/QFlareBot && pnpm install --filter '@qqbot/plugin-cli...' && pnpm --filter '@qqbot/plugin-cli...' build
 # PATH 里没有 pnpm 就用：node "D:/nodejs/node_modules/corepack/dist/pnpm.js" 代替 pnpm
 ```
+
+同一套 `../../` 同时满足本地与 CI 两种布局，**不要改**：本地是 `QFlareBot-Private-Plugin/<短名>` ↔ 同级的 `QFlareBot`；CI 是把本仓库检出到 `plugin/`、QFlareBot 检出到 `QFlareBot/`（见 `.github/workflows/ci.yml` 的 `path` 与 `working-directory`），`plugin/<短名>` 往上两级正好又是 `QFlareBot`。
 
 ## 1. 复制一份现成插件当模板
 
@@ -44,13 +47,24 @@ cd D:/code/QFlareBot && pnpm install --filter '@qqbot/plugin-cli...' && pnpm --f
 
 ```bash
 cd D:/code/QFlareBot-Private-Plugin
-cp -r demo/ <短名>/
+cp -r demo/ <短名>/          # 会连 node_modules/、dist/ 一起拷，下一步就删掉
 rm -rf <短名>/node_modules <短名>/dist
 rm -f  <短名>/package-lock.json <短名>/manifest.json   # 里面还是 demo 的名字，必须重生
 rm -f  <短名>/src/*.test.ts                            # demo 的业务测试，换成你自己的
 ```
 
+拷完应该剩这些：`.gitignore`、`LICENSE`、`README.md`、`package.json`、`src/index.ts`、`tsconfig.json`、`vitest.config.ts`。
+
+- `README.md`：**留下但改写**——标题、描述、用法都是 demo 的（`LICENSE` 保留即可）。
+- `src/index.ts`：**保留文件名，内容在 §3 整份重写**。
+
+> **⚠️ 这套流程里唯一能「静默通过全部检查」的坑：只改包名、不重写 `src/index.ts`。**
+> `npm run sync` 会把 demo 那 6 条命令原样抽成新插件的声明清单，而 `check-manifest.mjs` 只比对两份清单**一致**、不比对内容，所以照样打勾——装到机器人上跑的其实是 demo 的代码。
+> §5 那个脚本会把清单里的**命令列表**打出来：看到 `/hello、/count、/sign…` 就说明你忘了重写源码。
+
 `<短名>` 只能是小写字母、数字、`-`、`_`，并且**必须是这个插件唯一的标识**：它同时是 `definePlugin` 的 `name`、KV 前缀、D1 表前缀（`p_<短名>_`）和路由前缀（`/p/<短名>/`）。装到同一台机器人上的插件短名不能是彼此的 `-`/`_` 变体（`my-plugin` 与 `my_plugin` 的表前缀都是 `p_my_plugin_`，会撞车）。
+
+**短名和命令名没有关系**（`demo` 这个插件的命令是 `/hello`）。没有特别理由就用主命令名——这样目录名、包名后缀、`definePlugin.name`、安装来源的 `#<短名>` 四处天然一致。
 
 ## 2. 改 `package.json`
 
@@ -59,7 +73,7 @@ rm -f  <短名>/src/*.test.ts                            # demo 的业务测试�
 - `description` → 一句话
 - **`devDependencies` 一个字都不要动**（`file:../../QFlareBot/packages/*` 换成版本号就装不上了）
 
-## 3. 写 `src/index.ts`
+## 3. 写 `src/index.ts`（整份重写，不要留着 demo 的代码）
 
 `definePlugin({ name })` **必须严格等于目录名**，构建时校验，不一致直接构建失败。
 
@@ -86,13 +100,21 @@ export default definePlugin<Config>({
   defaultConfig: { reply: 'pong' },
 
   commands: {
-    // 返回值就是回复（字符串或消息对象），返回 undefined 表示不回复
+    // 最简形式：返回值就是回复（字符串或消息对象），返回 undefined 表示不回复
     probe: ({ ctx }) => ctx.config.reply,
+
+    // 要描述 / 别名 / 权限 / 子命令时用对象形式
+    help: {
+      description: '看用法',
+      usage: '/help',
+      aliases: ['帮助'],
+      handler: async () => '……',
+    },
   },
 })
 ```
 
-`apiVersion` 写的是插件**最低**要求的契约版本（当前上限 4），按用到的能力填：
+`apiVersion` 写的是插件**最低**要求的契约版本。**保守做法：按用到的最高一档能力显式写个小数字**——省略等于要求构建时 SDK 的最新契约（当前 4），插件在老机器人上会被拒装。
 
 | 版本 | 新增 | 什么时候必须写它 |
 | --- | --- | --- |
@@ -101,9 +123,9 @@ export default definePlugin<Config>({
 | 3 | `ctx.botAdmins`、`meetsPermission()`、`mentionedUsers()`、`session.isBotAdmin`、`session.quote` | 用了 SDK 导出的 `meetsPermission` / `mentionedUsers` **必须写 3**（老机器人上没这个导出，构建会失败）。只读 `session.isBotAdmin` / `session.quote` 不必 |
 | 4 | `ctx.images`、`ctx.browser` | 判断过 `undefined` 的不必写 4 |
 
-判断口径：**SDK 导出的函数算新能力**（`@qqbot/sdk` 一律解析成机器人仓库那一份，老机器人上没有就构建失败）；纯数据字段不算。不写 = 构建时 SDK 的 `API_VERSION`（当前 4）。
+判断口径：**SDK 导出的函数算新能力**（`@qqbot/sdk` 一律解析成机器人仓库那一份，老机器人上没有就构建失败）；纯数据字段不算。
 
-要更细的 API（消息/键盘/事件/权限/群管理/D1 与 KV 的省额度写法/插件网页）就看 `jrys/`、`demo/` 的实际用法——**它们是能跑通的样例，优先照抄而不是凭印象写**。
+要更细的 API（消息 / 键盘 / 事件 / 权限 / 群管理 / D1 与 KV 的省额度写法 / 插件网页）就看 `jrys/`、`demo/` 的实际用法——**它们是能跑通的样例，优先照抄而不是凭印象写**。
 
 ## 4. 写 `src/index.test.ts`
 
@@ -124,6 +146,8 @@ describe('<短名> plugin', () => {
 })
 ```
 
+`runCommand(plugin, '命令名')` 的第二个参数是**命令名本身，不带 `/`**（别名也认）。
+
 ## 5. 装依赖、生成声明清单、跑测试
 
 ```bash
@@ -135,7 +159,9 @@ npm test
 node ../scripts/check-manifest.mjs .    # 声明清单必须与源码一致，不一致面板会拒绝安装
 ```
 
-**`npm run sync` 这步不能省。** 面板安装时读的是仓库里这份 `manifest.json`（声明清单），机器人构建时又按源码重新抽一份，两者不一致这次构建就会失败。改完源码必须重跑、并把新的 `manifest.json` 一起提交。
+**`npm run sync` 这步不能省。** 面板安装时读的是插件目录里这份 `manifest.json`（声明清单），机器人构建时又按源码重新抽一份，两者不一致这次构建就会失败。改完源码必须重跑、并把新的 `manifest.json` 一起提交。
+
+`check-manifest.mjs` 会把清单里的 `name` / `version` / `apiVersion` / 命令列表打出来——**看一眼命令对不对**，它只保证两份清单一致，不保证内容是你要的（见 §1 那个坑）。
 
 ## 6. 把新插件加进 CI
 
@@ -153,10 +179,12 @@ CI 会为每个子目录单独跑一遍：并排检出两个仓库（`plugin/` �
 ```bash
 cd D:/code/QFlareBot-Private-Plugin
 git add -A
-git status --short        # 确认只有 <短名>/ 里的源文件 + 第 6 步改的 ci.yml，没有 node_modules/ 或 dist/
+git status --short        # 确认收进去的是 <短名>/ 下的 10 个文件 + 第 6 步改的 ci.yml，没有 node_modules/ 或 dist/
 git commit -m "feat(<短名>): <一句话>"
 git push
 ```
+
+`<短名>/` 下应该是这 10 个文件：`.gitignore`、`LICENSE`、`README.md`、`manifest.json`、`package-lock.json`、`package.json`、`src/index.test.ts`、`src/index.ts`、`tsconfig.json`、`vitest.config.ts`。**`manifest.json` 和 `package-lock.json` 都必须在里面。**
 
 ## 8. 回报给用户（这一步别省）
 
@@ -178,7 +206,7 @@ git:Rain48698/QFlareBot-Private-Plugin@<40 位 sha>#<短名>
 | --- | --- |
 | `definePlugin({ name })` == 目录名 == 包名去掉 `qflarebot-plugin-` | 构建期报 `name 与包名不一致` |
 | 改完源码跑 `npm run sync` 并提交 `manifest.json` | 声明清单与源码不一致，面板拒绝安装 / 构建失败 |
-| 提交 `package-lock.json`（有第三方 `dependencies` 时必须） | 没有 lockfile 构建机会直接失败 |
+| `package-lock.json` **一律提交**（哪怕只有 devDependencies） | 缺了它 CI 会退回 `npm install`、装出的版本不确定；有第三方 `dependencies` 时构建机会直接失败 |
 | **不要**提交 `node_modules/`、`dist/` | 已在 `.gitignore` 里；加进去只会让仓库变脏 |
 | 不动 `devDependencies` 里的 `file:../../QFlareBot/packages/*` | 换成版本号就装不上（两个包都不发 npm） |
 | 插件代码不能 import Node 内置模块（`node:fs`、`net`…） | 插件跑在 workerd 里，构建期报 `Could not resolve "node:fs"` |
@@ -197,10 +225,11 @@ git:Rain48698/QFlareBot-Private-Plugin@<40 位 sha>#<短名>
 | `Could not resolve "node:fs"` | 插件里用了 Node 内置模块，删掉；只给测试用就放进测试文件 |
 | `插件不能 import 框架内部的包 @qqbot/runtime` | 能力只能从 `ctx` / `session` 取，只有 `@qqbot/sdk` 可以打包进插件 |
 | `抽取清单时无法在 Node 中加载 cloudflare:xxx` | 改成在处理器内部 `await import('cloudflare:xxx')` |
-| 面板安装报 `HTTP 403` / `解析分支 main 的最新 commit 失败` | 面板的匿名 GitHub API 限流，不是你代码的问题。改用 40 位 sha 的 `git:` 来源（见第 8 步） |
+| 面板安装报 `HTTP 403` / `解析分支 main 的最新 commit 失败` | 面板的匿名 GitHub API 限流，不是你代码的问题。改用 40 位 sha 的 `git:` 来源（见 §8） |
 | 面板安装报 404 | 仓库是真的读不到：被改成私有了，或者这个 commit 下没有提交 `manifest.json` |
 | 本地 `npm install` 报找不到 `../QFlareBot/packages/...` | 两个仓库不在同一个父目录，或者 `file:` 的层级被改过 |
 | 测试里 `no such table: p_<短名>_<表>` | 测试替身不跑 `hooks`，测试里自己调一次 `plugin.hooks.onInstall(ctx)`；**线上出现同样的错是另一回事**——`onInstall` 升级不重跑，新表要在 `onBoot` 里惰性建 |
+| `git push` 报 `Failed to connect to github.com:443 over proxy 127.0.0.1` | 本机代理没开。不要改全局配置，同一条命令临时清空代理重跑：`git -c http.proxy= -c https.proxy= push` |
 
 > 手边如果有 QFlareBot 插件开发技能（`D:/code/QFlareBot-plugin-generator`），它的 `references/` 有更细的实现细节，可以按需读。但注意它自带的 `scaffold.mjs` 假设的是**经典单插件布局**，直接生成到这个仓库里要手动改两处：`file:` 多退一级、删掉它生成的 per-plugin `.github/workflows/ci.yml`。**通常直接照 `demo/` 复制更省事。**
 
@@ -239,11 +268,11 @@ cd jrys                       # 或 demo
 npm install
 npm run typecheck             # tsc --noEmit
 npm test                      # vitest
-npm run sync                  # 构建 + 把 dist/manifest.json 拷成仓库根的 manifest.json
+npm run sync                  # 构建 + 把 dist/manifest.json 拷成插件目录的 manifest.json
 ```
 
 **挪动插件目录后必须删掉 `package-lock.json` 重新 `npm install`**：npm 不会清掉旧路径留下的 lockfile 条目，`npm ci` 会读到两份。
 
 # CI
 
-`.github/workflows/ci.yml` 对 `matrix.plugin` 里的每个子目录跑一遍，步骤见上面第 6 节。CI 只是自查，与面板安装无关——安装只看仓库里的 `manifest.json` 和构建机能不能打包。
+`.github/workflows/ci.yml` 对 `matrix.plugin` 里的每个子目录跑一遍，步骤见上面 §6。CI 只是自查，与面板安装无关——安装只看仓库里的 `manifest.json` 和构建机能不能打包。
