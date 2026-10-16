@@ -1,0 +1,108 @@
+{
+  "name": "kkys",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "permissions": [
+    "kv",
+    "net"
+  ],
+  "depends": {},
+  "conflicts": [],
+  "commands": [
+    {
+      "name": "看剧",
+      "description": "搜索影片并解析播放直链",
+      "usage": "/看剧 <片名> [集数]",
+      "aliases": [
+        "kkys",
+        "可可影视"
+      ]
+    },
+    {
+      "name": "看剧 状态",
+      "description": "查看反爬凭证状态",
+      "permission": "bot_admin"
+    },
+    {
+      "name": "看剧 刷新",
+      "description": "强制重破反爬、刷新凭证",
+      "permission": "bot_admin"
+    },
+    {
+      "name": "一起看",
+      "description": "视频直链转一起看房间链接",
+      "usage": "/一起看 <视频直链>"
+    }
+  ],
+  "regex": [],
+  "events": [
+    {
+      "event": [
+        "qq.group.robot_added"
+      ]
+    }
+  ],
+  "buttons": [
+    {
+      "id": "pick"
+    },
+    {
+      "id": "line"
+    },
+    {
+      "id": "page"
+    },
+    {
+      "id": "ep"
+    },
+    {
+      "id": "latest"
+    },
+    {
+      "id": "yqt"
+    }
+  ],
+  "cron": [],
+  "routes": [],
+  "hasMiddleware": false,
+  "services": [],
+  "durableObjects": [],
+  "displayName": "可可影视",
+  "description": "搜索 kkys01.com 影片、解析播放直链并生成一起看房间链接",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "filterIrrelevant": {
+        "type": "boolean",
+        "title": "过滤无关搜索结果",
+        "default": true,
+        "description": "站点是模糊匹配，搜不到时会返回无关影片。开启后按标题相似度剔除（判定宽松，避免误杀）"
+      },
+      "maxResults": {
+        "type": "integer",
+        "title": "搜索结果展示条数",
+        "default": 8,
+        "minimum": 1,
+        "maximum": 15
+      },
+      "watchTogetherBase": {
+        "type": "string",
+        "title": "一起看地址",
+        "default": "https://yqk.060908.xyz/watch.html"
+      },
+      "manualCookie": {
+        "type": "string",
+        "title": "手动 Cookie（应急）",
+        "default": "",
+        "writeOnly": true,
+        "description": "留空即自动破解反爬。站点改了挑战页格式、自动破解失效时，从浏览器复制 `cdndefend_js_cookie=...` 填进来应急"
+      }
+    }
+  },
+  "defaultConfig": {
+    "filterIrrelevant": true,
+    "maxResults": 8,
+    "watchTogetherBase": "https://yqk.060908.xyz/watch.html",
+    "manualCookie": ""
+  }
+}

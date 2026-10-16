@@ -1,0 +1,24 @@
+{
+  "name": "qflarebot-plugin-kkys",
+  "version": "0.1.0",
+  "description": "搜索 kkys01.com 影片、解析播放直链并生成一起看房间链接",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "qflarebot-plugin"
+  ],
+  "scripts": {
+    "build": "qqbot-plugin build",
+    "sync": "qqbot-plugin build && node -e \"require('node:fs').copyFileSync('dist/manifest.json','manifest.json')\"",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@types/node": "^24.0.0",
+    "@qqbot/plugin-cli": "file:../../QFlareBot/packages/plugin-cli",
+    "@qqbot/sdk": "file:../../QFlareBot/packages/sdk",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

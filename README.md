@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | `demo/` | `demo` | 签到 / 积分 / 排行 |
 | `jrys/` | `jrys` | 今日运势 |
+| `kkys/` | `kkys` | 可可影视：搜片、取 m3u8/mp4 播放直链、生成一起看房间链接 |
 
 > 仓库名里的 `Private` 只是个名字。**这个仓库必须保持 public**——面板安装时匿名读仓库里的 `manifest.json`，构建机也匿名下载源码，私有仓库两步都会 404。
 
@@ -85,7 +86,7 @@ node ../scripts/check-manifest.mjs .
 `.github/workflows/ci.yml` 的 matrix 加个名字，就这一处：
 
 ```yaml
-        plugin: [jrys, demo, <短名>]
+        plugin: [jrys, demo, kkys, <短名>]
 ```
 
 ## 6. 提交推送
@@ -131,11 +132,13 @@ git:Rain48698/QFlareBot-Private-Plugin@<40 位 sha>#<短名>
 
 ```
 git:Rain48698/QFlareBot-Private-Plugin@<40 位 sha>#jrys
+# 或者
+# git:Rain48698/QFlareBot-Private-Plugin@<40 位 sha>#kkys
 ```
 
 **安装记录钉在那个 commit 上**，往仓库推新代码不会自动生效；要更新去面板「已装插件 → 检查全部更新 → 更新选中」。
 
-两个插件都只用 `ctx` 能力，没有第三方运行时依赖、没有 Durable Object，装之前不需要往机器人仓库补 `migrations`。
+三个插件都只用 `ctx` 能力，没有第三方运行时依赖、没有 Durable Object，装之前不需要往机器人仓库补 `migrations`。
 
 # 开发与 CI
 

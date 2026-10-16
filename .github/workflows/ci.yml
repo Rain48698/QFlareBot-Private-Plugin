@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [jrys, demo]
+        plugin: [jrys, demo, kkys]
     defaults:
       run:
         working-directory: plugin/${{ matrix.plugin }}
