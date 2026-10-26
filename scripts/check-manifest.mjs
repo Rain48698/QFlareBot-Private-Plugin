@@ -5,7 +5,7 @@
  * 面板安装时读的是仓库里的 manifest.json（声明清单），机器人构建时又按源码重新抽一份；两者不一致，
  * 这次构建会失败（见 docs/publish.md）。改完源码记得先 `npm run sync` 再提交。
  *
- * 用法：node scripts/check-manifest.mjs <插件目录>      例：node scripts/check-manifest.mjs jrys
+ * 用法：node scripts/check-manifest.mjs <插件目录>      例：node scripts/check-manifest.mjs demo
  */
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
