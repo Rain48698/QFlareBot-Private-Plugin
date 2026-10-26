@@ -194,7 +194,13 @@ describe('时效提示与一起看链接', () => {
     const text = describePlayUrlExpiry(`https://cdn.example.com/a/index.m3u8?sign=x&timestamp=${timestamp}`)
     expect(text).toContain('签发于 2026-10-17 14:23:11')
     expect(text).toContain('过期后需重新解析')
-    expect(text).not.toContain('页面缓存')
+  })
+
+  it('刚签发的链接不提示页面缓存', () => {
+    const timestamp = Math.floor((Date.now() - 60 * 1000) / 1000)
+    expect(describePlayUrlExpiry(`https://cdn.example.com/a/index.m3u8?timestamp=${timestamp}`)).not.toContain(
+      '页面缓存',
+    )
   })
 
   it('签发超过 30 分钟提示可能来自页面缓存', () => {
