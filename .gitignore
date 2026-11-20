@@ -3,3 +3,8 @@ dist/
 coverage/
 *.log
 .DS_Store
+
+# 本机工具留下的目录，不属于插件仓库
+.zcode/
+.agents/
+.claude/

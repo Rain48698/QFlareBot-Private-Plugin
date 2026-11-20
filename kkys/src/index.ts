@@ -644,16 +644,24 @@ export function createKkys(runtime: KkysRuntime) {
     }
   }
 
-  /** 不带 Cookie 请求首页触发 850，破解 PoW，返回可用的 Cookie 值 */
-  async function solveCookie(): Promise<string | null> {
-    const res = await httpGet(BASE_URL, null, HOMEPAGE_TIMEOUT_MS)
-    if (res.status === -1) return null
-    if (res.status === 200) return null
-    if (!isChallenge(res.status, res.text)) {
-      logger.error('首页返回意外状态码，未触发反爬挑战', { status: res.status })
-      return null
+  /**
+   * 破解 PoW，返回可用的 Cookie 值。
+   * 已经拿到挑战页时把 HTML 传进来：调用方那次首页请求既触发了 850 又给了挑战页，
+   * 再自己请求一遍首页纯属浪费一个子请求（免费版一次事件只有 50 个）。
+   */
+  async function solveCookie(challengeHtml?: string): Promise<string | null> {
+    let html = challengeHtml
+    if (html === undefined) {
+      const res = await httpGet(BASE_URL, null, HOMEPAGE_TIMEOUT_MS)
+      if (res.status === -1) return null
+      if (res.status === 200) return null
+      if (!isChallenge(res.status, res.text)) {
+        logger.error('首页返回意外状态码，未触发反爬挑战', { status: res.status })
+        return null
+      }
+      html = res.text
     }
-    const parsed = parseCdndefendChallenge(res.text)
+    const parsed = parseCdndefendChallenge(html)
     if (!parsed) {
       logger.error('反爬挑战页格式变了（正则失配），需要重新分析挑战页 JS')
       return null
@@ -672,7 +680,7 @@ export function createKkys(runtime: KkysRuntime) {
    * 确保 Cookie 与 t 参数就绪。只发一次首页请求：同一个响应既用来判断是否需要
    * 挑战，也用来提取 t 参数。凭证新鲜时直接返回缓存，不发请求。
    */
-  async function ensureReady(force = false): Promise<Creds | null> {
+  async function ensureReadyUncached(force: boolean): Promise<Creds | null> {
     const cached = await loadCreds()
     if (!force && cached && cached.t && Date.now() - cached.ts < CREDS_FRESH_MS) return cached
 
@@ -685,7 +693,8 @@ export function createKkys(runtime: KkysRuntime) {
         logger.error('面板里配置的手动 Cookie 也被反爬拦截了，请换一条新的')
         return null
       }
-      const solved = await solveCookie()
+      // 第一个首页请求的响应里就带着挑战页，直接交给 solveCookie，别再请求一遍
+      const solved = await solveCookie(res.text)
       if (!solved) return null
       cookie = solved
       res = await httpGet(BASE_URL, cookie, HOMEPAGE_TIMEOUT_MS)
@@ -707,6 +716,25 @@ export function createKkys(runtime: KkysRuntime) {
     const creds: Creds = { cookie, t, ts: Date.now() }
     await saveCreds(creds)
     return creds
+  }
+
+  /**
+   * 同一次事件里 `search` / `detail` / `playUrl` 各自都会要凭证，不缓存的话
+   * `/看剧 斗罗大陆 2` 一条命令就要读 4 次 KV、可能发 4 次首页请求。
+   * 这里按客户端实例缓存一个 Promise：一次事件只读一次 KV、只发一次首页。
+   * 失败结果也缓存（同一个事件里重试大概率还是失败），`force` 会清掉重来。
+   */
+  let credsCache: Promise<Creds | null> | null = null
+  function ensureReady(force = false): Promise<Creds | null> {
+    if (force) credsCache = null
+    const hit = credsCache
+    if (hit) return hit
+    const task = ensureReadyUncached(force).catch((err: unknown) => {
+      credsCache = null
+      throw err
+    })
+    credsCache = task
+    return task
   }
 
   /**
@@ -950,6 +978,7 @@ function playKeyboard(sid: string) {
   return keyboard([
     [
       button.callback('最新一集', `latest:${sid}`, { id: 'latest' }),
+      // 换线路 → 线路列表（会话里已有全部线路，不发请求）
       button.callback('换线路', `lines:${sid}`, { id: 'lines' }),
       button.callback('一起看', `yqt:${sid}`, { id: 'yqt' }),
     ],
@@ -1038,6 +1067,11 @@ function episodePageReply(state: SessionState, sid: string, lineIdx: number, lin
     nav.push(button.callback('下一页', `page:${sid}:${lineIdx}:${pageIdx + 1}`, { id: 'page' }))
   }
   if (nav.length > 0) rows.push(nav)
+  // 有多条线路时给一个回线路列表的入口，不用退出去重发命令。
+  // 只有一条线路就不加：那个按键点进去还是同一条线路，纯噪音。
+  if (state.lines.length > 1) {
+    rows.push([button.callback('换线路', `lines:${sid}`, { id: 'lines' })])
+  }
 
   const label = line.sublabel ? `${line.name}（${line.sublabel}）` : line.name
   const pageInfo =
@@ -1046,6 +1080,35 @@ function episodePageReply(state: SessionState, sid: string, lineIdx: number, lin
       : ''
   return {
     text: `${state.title} · ${label} · 共 ${line.episodes.length} 集${pageInfo}\n\n👉 点集数取直链`,
+    keyboard: keyboard(rows),
+    quote: true,
+  }
+}
+
+/**
+ * 线路列表。只读会话里已存好的 lines/flat，不发任何请求——
+ * 所以「换线路」按键做到零子请求。
+ */
+function lineListReply(state: SessionState, sid: string) {
+  const lines = sessionLines(state)
+  const rows: ReturnType<typeof button.callback>[][] = []
+  for (let i = 0; i < lines.length && i < 15; i += 5) {
+    rows.push(
+      lines
+        .slice(i, i + 5)
+        .map((line, j) => {
+          const raw = lineLabel(line.name, line.sublabel)
+          const current = state.lineIdx === i + j
+          // 按键 label 上限 10 字，标记只在不超长时加
+          const label = current && raw.length <= 8 ? `▶${raw}` : raw
+          return button.callback(label, `line:${sid}:${i + j}`, { id: 'line' })
+        }),
+    )
+  }
+  const total = state.lines.reduce((sum, l) => sum + l.n, 0)
+  const hint = state.lineIdx !== undefined ? `\n当前在「${lines[state.lineIdx]?.name ?? '未知'}」` : ''
+  return {
+    text: `🎬 ${state.title}\n共 ${lines.length} 条线路、${total} 集${hint}\n\n👉 选一条线路看剧集`,
     keyboard: keyboard(rows),
     quote: true,
   }
@@ -1279,21 +1342,16 @@ export default definePlugin<Config>({
         ts: Date.now(),
       }
       await ctx.kv.put(`k:${sid}`, next, { ttl: SESSION_TTL_SECONDS })
+      return lineListReply(next, sid ?? '')
+    },
 
-      const rows: ReturnType<typeof button.callback>[][] = []
-      for (let i = 0; i < ordered.length && i < 15; i += 5) {
-        rows.push(
-          ordered
-            .slice(i, i + 5)
-            .map((line, j) => button.callback(lineLabel(line.name, line.sublabel), `line:${sid}:${i + j}`, { id: 'line' })),
-        )
-      }
-      const total = next.lines.reduce((sum, l) => sum + l.n, 0)
-      return {
-        text: `🎬 ${next.title}\n共 ${next.lines.length} 条线路、${total} 集\n\n👉 选一条线路看剧集`,
-        keyboard: keyboard(rows),
-        quote: true,
-      }
+    /** 换线路（剧集界面的入口）：不请求站点，直接用会话里存好的线路 */
+    async lines({ ctx, buttonData }) {
+      const [, sid] = buttonData.split(':')
+      const state = await loadSession(ctx, sid)
+      if (!state) return '会话已过期，请重新发 /看剧 <片名>'
+      if (state.lines.length === 0) return '这条会话里还没有线路，请重新选片'
+      return lineListReply(state, sid ?? '')
     },
 
     /** 选线路 → 列出该线路的剧集（默认末页，也就是最新几集） */
@@ -1304,6 +1362,14 @@ export default definePlugin<Config>({
       const lineIdx = Number(idxText)
       const line = sessionLines(state)[lineIdx]
       if (!line) return '线路不存在，请重新选片'
+      // 记住当前线路，换线路界面和「最新一集」都以它为准
+      state.lineIdx = lineIdx
+      state.ts = Date.now()
+      try {
+        await ctx.kv.put(`k:${sid}`, state, { ttl: SESSION_TTL_SECONDS })
+      } catch (e) {
+        ctx.logger.warn('保存线路选择失败', { error: String(e) })
+      }
       return episodePageReply(state, sid ?? '', lineIdx, line, Number.NaN)
     },
 

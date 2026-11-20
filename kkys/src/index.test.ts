@@ -294,6 +294,64 @@ describe('按键', () => {
     const reply = await buttons.pick!({ ctx, buttonData: 'pick:nosuchid:0' })
     expect(textOf(reply)).toContain('会话已过期')
   })
+
+  it('「换线路」按键能回到线路列表，且不再请求站点', async () => {
+    const calls = stubSite()
+    const { ctx } = await runCommandDirect('看剧', '斗罗大陆')
+    const sid = await firstSessionId(ctx)
+    await buttons.pick!({ ctx, buttonData: `pick:${sid}:0` })
+    const before = calls.length
+
+    const lines = await buttons.lines!({ ctx, buttonData: `lines:${sid}` })
+    const text = textOf(lines)
+    expect(text).toContain('斗罗大陆2绝世唐门')
+    expect(text).toContain('共 1 条线路')
+    expect(calls.length).toBe(before)
+  })
+
+  it('播放结果里的「换线路」按键指向真的存在的处理器', async () => {
+    stubSite()
+    const { ctx } = await runCommandDirect('看剧', '斗罗大陆 2')
+    const sid = await firstSessionId(ctx)
+    // 摊平按键：label 与 action.data 都要有，data 的前缀就是 buttons 的 key
+    const reply = await buttons.latest!({ ctx, buttonData: `latest:${sid}` })
+    const buttonsOf = (keyboardOf(reply)?.rows ?? []).flatMap((r) =>
+      r.buttons.map((b) => ({
+        label: b.render_data.label,
+        data: (b as unknown as { action: { data?: string } }).action.data ?? '',
+      })),
+    )
+    const change = buttonsOf.find((b) => b.label === '换线路')
+    expect(change).toBeTruthy()
+    // 关键断言：按键 id 必须是插件真有的处理器名（此前错写成 lines 之外的东西会静默无响应）
+    expect(change?.data.startsWith('lines:')).toBe(true)
+    expect(Object.keys(plugin.buttons ?? {})).toContain('lines')
+  })
+
+  it('只有一条线路时不显示「换线路」按键（点进去还是同一条，纯噪音）', async () => {
+    stubSite()
+    const ctx = newCtx()
+    const sid = 'oneline'
+    await ctx.kv.put(`k:${sid}`, {
+      kw: '测试',
+      title: '测试剧',
+      detailUrl: `${BASE}/detail/100.html`,
+      lines: [{ name: '线路A', sub: '', n: 3 }],
+      flat: '41-1\t第1集\n41-2\t第2集\n41-3\t第3集',
+      ts: Date.now(),
+    })
+    const reply = await buttons.line!({ ctx, buttonData: `line:${sid}:0` })
+    const labels = (keyboardOf(reply)?.rows ?? []).flatMap((r) => r.buttons.map((b) => b.render_data.label))
+    expect(labels).toEqual(['第1集', '第2集', '第3集'])
+  })
+
+  it('一次命令只请求两次首页（凭证在同一次事件内复用，不再重复确认）', async () => {
+    const calls = stubSite()
+    await runCommandDirect('看剧', '斗罗大陆 2')
+    const homeHits = calls.filter((c) => c.url === BASE || c.url === `${BASE}/`).length
+    // 第一次无 Cookie 拿到 850 + 挑战页，第二次带解出来的 Cookie 拿到正常首页；不该有第三次
+    expect(homeHits).toBe(2)
+  })
 })
 
 describe('事件', () => {
