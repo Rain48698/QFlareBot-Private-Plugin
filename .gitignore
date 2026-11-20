@@ -8,3 +8,6 @@ coverage/
 .zcode/
 .agents/
 .claude/
+
+# 真机验证脚本的打包产物
+.cache/

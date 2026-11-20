@@ -91,6 +91,31 @@ function keyboardOf(result: unknown): { rows: { buttons: { render_data: { label:
   return (result as { keyboard?: { content?: { rows: unknown[] } } }).keyboard?.content as never
 }
 
+/**
+ * QQ 的按键 label 上限按**显示宽度**算（汉字等非 ASCII 算 2、英文数字算 1），不是字符数。
+ * `FF线路·播放快/高清` 只有 11 个字符、宽度 16，按字符数截断看着没超、实际会被平台截在半个词上。
+ */
+function displayWidth(s: string): number {
+  let w = 0
+  for (const ch of s) w += (ch.codePointAt(0) ?? 0) <= 0x7f ? 1 : 2
+  return w
+}
+
+function labelsOf(result: unknown): string[] {
+  return (keyboardOf(result)?.rows ?? []).flatMap((r) => r.buttons.map((b) => b.render_data.label))
+}
+
+function datasOf(result: unknown): string[] {
+  return (keyboardOf(result)?.rows ?? []).flatMap((r) => r.buttons.map((b) => b.action?.data ?? ''))
+}
+
+/** 每个按键的 data 前缀都必须是插件真有的处理器名——写错时不报错、只点了没反应 */
+function assertButtonIdsExist(result: unknown): void {
+  const keys = new Set(Object.keys(plugin.buttons ?? {}))
+  const missing = [...new Set(datasOf(result).map((d) => d.split(':')[0]!))].filter((k) => !keys.has(k))
+  expect(missing).toEqual([])
+}
+
 async function firstSessionId(ctx: { kv: { list(prefix?: string): Promise<string[]> } }): Promise<string> {
   const keys = await ctx.kv.list('k:')
   const key = keys[0]
@@ -351,6 +376,50 @@ describe('按键', () => {
     const homeHits = calls.filter((c) => c.url === BASE || c.url === `${BASE}/`).length
     // 第一次无 Cookie 拿到 850 + 挑战页，第二次带解出来的 Cookie 拿到正常首页；不该有第三次
     expect(homeHits).toBe(2)
+  })
+
+  it('线路按键 label 按显示宽度截断，不是字符数（平台按宽度算）', async () => {
+    const ctx = newCtx()
+    const sid = 'wide'
+    // 真机上出现过的长组合：11 个字符、显示宽度 16
+    await ctx.kv.put(`k:${sid}`, {
+      kw: '测试',
+      title: '测试剧',
+      detailUrl: `${BASE}/detail/100.html`,
+      lines: [
+        { name: 'FF线路', sub: '播放快/高清', n: 1 },
+        { name: 'HN线路', sub: '中国大陆加速', n: 1 },
+        { name: '蓝光1', sub: '香港加速', n: 1 },
+      ],
+      flat: '41-1\t第1集\n4-2\t第1集\n27-3\t第1集',
+      ts: Date.now(),
+    })
+    const reply = await buttons.lines!({ ctx, buttonData: `lines:${sid}` })
+    const labels = labelsOf(reply)
+    expect(labels.length).toBe(3)
+    for (const label of labels) {
+      // 平台软上限约 16 显示宽度；超了会被截在半个词上（"中国大陆加速" → "中国大陆加"）
+      expect(displayWidth(label)).toBeLessThanOrEqual(16)
+    }
+    // 短的保持原样，长的带省略号而不是硬切
+    expect(labels).toContain('蓝光1·香港加速')
+    expect(labels.some((l) => l.endsWith('…'))).toBe(true)
+    assertButtonIdsExist(reply)
+  })
+
+  it('所有能产出按键的回复，按键 data 都指向真有的处理器', async () => {
+    stubSite()
+    const { ctx, result: searchReply } = await runCommandDirect('看剧', '斗罗大陆')
+    assertButtonIdsExist(searchReply)
+    const sid = await firstSessionId(ctx)
+    const pick = await buttons.pick!({ ctx, buttonData: `pick:${sid}:0` })
+    assertButtonIdsExist(pick)
+    const line = await buttons.line!({ ctx, buttonData: `line:${sid}:0` })
+    assertButtonIdsExist(line)
+    const ep = await buttons.ep!({ ctx, buttonData: `ep:${sid}:0:1` })
+    assertButtonIdsExist(ep)
+    const latest = await buttons.latest!({ ctx, buttonData: `latest:${sid}` })
+    assertButtonIdsExist(latest)
   })
 })
 

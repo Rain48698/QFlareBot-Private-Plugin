@@ -941,8 +941,39 @@ const USAGE = [
   '/看剧 状态 · /看剧 刷新 — 反爬凭证（仅管理员）',
 ].join('\n')
 
-function truncateLabel(s: string, max = 10): string {
-  return s.length > max ? s.slice(0, max) : s
+/**
+ * 把标签截到平台的显示宽度内。
+ *
+ * QQ 的按键 label 上限按**显示宽度**算（汉字等非 ASCII 算 2、英文数字算 1），
+ * 不是按字符数——`FF线路·播放快/高清` 只有 11 个字符、宽度却有 16。
+ * 按字符数截断时看着没超，实际仍会被平台截掉，截在半个词上（`中国大陆加速` → `中国大陆加`）。
+ */
+/** 单个字符的显示宽度：ASCII 算 1，其余（汉字、全角符号、`…`）算 2 */
+function charWidth(ch: string): number {
+  return (ch.codePointAt(0) ?? 0) <= 0x7f ? 1 : 2
+}
+
+function displayWidth(s: string): number {
+  let w = 0
+  for (const ch of s) w += charWidth(ch)
+  return w
+}
+
+/** 省略号 `…` 是 U+2026，宽度 2——截断时要把它算进去，不能按 1 留位 */
+const ELLIPSIS = '…'
+const ELLIPSIS_WIDTH = charWidth(ELLIPSIS)
+
+function truncateLabel(s: string, maxWidth = 16): string {
+  if (displayWidth(s) <= maxWidth) return s
+  let out = ''
+  let w = 0
+  for (const ch of s) {
+    const cw = charWidth(ch)
+    if (w + cw > maxWidth - ELLIPSIS_WIDTH) break
+    out += ch
+    w += cw
+  }
+  return `${out}${ELLIPSIS}`
 }
 
 function lineLabel(name: string, sublabel: string): string {
@@ -1097,10 +1128,9 @@ function lineListReply(state: SessionState, sid: string) {
       lines
         .slice(i, i + 5)
         .map((line, j) => {
-          const raw = lineLabel(line.name, line.sublabel)
           const current = state.lineIdx === i + j
-          // 按键 label 上限 10 字，标记只在不超长时加
-          const label = current && raw.length <= 8 ? `▶${raw}` : raw
+          // 当前线路加个 ▶ 前缀，整条按显示宽度截断（不是字符数）
+          const label = truncateLabel(current ? `▶${lineLabel(line.name, line.sublabel)}` : lineLabel(line.name, line.sublabel))
           return button.callback(label, `line:${sid}:${i + j}`, { id: 'line' })
         }),
     )
