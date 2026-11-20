@@ -234,21 +234,65 @@ describe('命令', () => {
     expect(rows.flatMap((r) => r.buttons.map((b) => b.render_data.label))).toEqual(['1', '2', '3'])
   })
 
-  it('看剧 状态：报告 Cookie / t 参数 / 首页连通性', async () => {
+  it('看剧 状态：现解凭证并真打一次搜索，结论以搜索为准', async () => {
     stubSite()
     const { result } = await runCommandDirect('看剧 状态')
     const text = textOf(result)
-    expect(text).toContain('可可影视凭证状态')
-    expect(text).toContain('首页：HTTP 850')
-    expect(text).toContain('下次请求会自动重破')
+    expect(text).toContain('可可影视反爬体检')
+    // 解算耗时要报出来——免费版 10ms CPU 的判断依据
+    expect(text).toContain('解算耗时')
+    // 关键：结论来自「搜索探测」，不是只看首页
+    expect(text).toContain('搜索探测')
+    expect(text).toContain('✅ 正常')
   })
 
-  it('看剧 刷新：强制破解并回报凭证', async () => {
+  it('看剧 状态：搜索被拦时明确报出来（不谎报正常）', async () => {
+    // 首页放行、搜索一直 850：模拟「凭证刚好用到失效」
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: { headers?: Record<string, string> }) => {
+        const url = typeof input === 'string' ? input : String((input as Request).url)
+        const cookie = init?.headers?.cookie ?? null
+        if (url === BASE || url === `${BASE}/`) {
+          if (!cookie) return fakeResponse(challengeHtml, 850)
+          return fakeResponse(homeHtml, 200)
+        }
+        if (url.includes('/search?')) return fakeResponse(challengeHtml, 850)
+        return fakeResponse('', 404)
+      }),
+    )
+    const { result } = await runCommandDirect('看剧 状态')
+    const text = textOf(result)
+    expect(text).toContain('搜索仍被反爬拦截')
+    expect(text).not.toContain('✅ 正常')
+  })
+
+  it('看剧 刷新：用真实搜索验证，通了才报成功', async () => {
     stubSite()
     const { result } = await runCommandDirect('看剧 刷新')
     const text = textOf(result)
-    expect(text).toContain('凭证已刷新')
-    expect(text).toContain('cdndefend_js_cookie=')
+    expect(text).toContain('刷新成功')
+    expect(text).toContain('已用真实搜索验证')
+    // 桩数据里「测试」搜不到，所以这里是 0 条——关键断言是「搜索这一路真的走通了」
+    expect(text).toMatch(/搜索「测试」拿到 \d+ 条结果/)
+    // 不再回显完整 cookie（一次性凭证，回显没意义）
+    expect(text).not.toContain('cdndefend_js_cookie=')
+  })
+
+  it('看剧 刷新：搜索不通时如实报失败并给排查方向', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const url = typeof input === 'string' ? input : String((input as Request).url)
+        if (url === BASE || url === `${BASE}/`) return fakeResponse(challengeHtml, 850)
+        // 搜索始终 850：模拟凭证一次性导致重试也救不回来
+        return fakeResponse(challengeHtml, 850)
+      }),
+    )
+    const { result } = await runCommandDirect('看剧 刷新')
+    const text = textOf(result)
+    expect(text).toContain('刷新失败')
+    expect(text).toContain('10 ms CPU')
   })
 })
 
@@ -420,6 +464,82 @@ describe('按键', () => {
     assertButtonIdsExist(ep)
     const latest = await buttons.latest!({ ctx, buttonData: `latest:${sid}` })
     assertButtonIdsExist(latest)
+  })
+})
+
+describe('凭证生命周期（cdndefend 的 cookie 是一次性的）', () => {
+  /**
+   * 这是真机踩出来的核心 bug：cookie 解出来只能用很短时间，等 5 秒就 850。
+   * 旧实现把它存 KV 12 小时，于是第一次用成功、之后全失败。
+   * 下面两条把「不跨事件复用」和「失效必须重解」钉住。
+   */
+  it('KV 里超过 5 秒的旧凭证不会被拿来用', async () => {
+    const calls = stubSite()
+    const ctx = newCtx()
+    // 塞一条 10 秒前的「有效」凭证
+    await ctx.kv.put('creds', {
+      cookie: 'cdndefend_js_cookie=STALE_TOKEN_OLD',
+      t: 'STALE_T_PARAM',
+      ts: Date.now() - 10_000,
+    })
+    await runCommandDirect('看剧', '斗罗大陆', ctx)
+    // 必须重新跑一遍首页 + 解算，而不是直接用 STALE
+    const staleUsed = calls.some((c) => c.cookie?.includes('STALE_TOKEN_OLD'))
+    expect(staleUsed).toBe(false)
+    // 首页至少被请求了两次（无 cookie 拿 850 → 带新 cookie 拿 200）
+    expect(calls.filter((c) => c.url === BASE || c.url === `${BASE}/`).length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('搜索连续被拦时会换新凭证重试（默认 2 次，为 CPU 预算让路）', async () => {
+    let searchHits = 0
+    let homeHits = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: { headers?: Record<string, string> }) => {
+        const url = typeof input === 'string' ? input : String((input as Request).url)
+        const cookie = init?.headers?.cookie ?? null
+        if (url === BASE || url === `${BASE}/`) {
+          homeHits += 1
+          if (!cookie) return fakeResponse(challengeHtml, 850)
+          return fakeResponse(homeHtml, 200)
+        }
+        if (url.includes('/search?')) {
+          searchHits += 1
+          // 第一次拦、第二次放行：证明「换新凭证重试」这条链路通
+          return searchHits < 2 ? fakeResponse(challengeHtml, 850) : fakeResponse(searchHtml, 200)
+        }
+        return fakeResponse('', 404)
+      }),
+    )
+    const { result } = await runCommandDirect('看剧', '斗罗大陆')
+    // 默认 attempts=2：被拦一次、换凭证后成功
+    expect(searchHits).toBe(2)
+    expect(homeHits).toBeGreaterThan(2)
+    expect(textOf(result)).toContain('斗罗大陆2绝世唐门')
+  })
+
+  it('两次都被拦时如实失败，不会无限重试烧 CPU', async () => {
+    let searchHits = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: { headers?: Record<string, string> }) => {
+        const url = typeof input === 'string' ? input : String((input as Request).url)
+        const cookie = init?.headers?.cookie ?? null
+        if (url === BASE || url === `${BASE}/`) {
+          if (!cookie) return fakeResponse(challengeHtml, 850)
+          return fakeResponse(homeHtml, 200)
+        }
+        if (url.includes('/search?')) {
+          searchHits += 1
+          return fakeResponse(challengeHtml, 850)
+        }
+        return fakeResponse('', 404)
+      }),
+    )
+    const { result } = await runCommandDirect('看剧', '斗罗大陆')
+    expect(textOf(result)).toContain('搜索失败')
+    // 只试 2 次（含换凭证重试），不无限循环——每次都是真 PoW，免费版 CPU 撑不住更多
+    expect(searchHits).toBe(2)
   })
 })
 

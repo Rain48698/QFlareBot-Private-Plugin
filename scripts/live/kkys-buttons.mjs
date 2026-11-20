@@ -252,8 +252,19 @@ section('13. 反爬状态命令')
 {
   const reply = await runCommand('看剧 状态', '', newCtx())
   const text = textOf(reply)
-  if (text.includes('凭证状态')) ok('状态命令可用', text.split('\n')[2] ?? '')
-  else bad('状态命令异常', text.slice(0, 200))
+  // 体检结果里必须带「搜索探测」这一行——结论以搜索能不能通为准，不是只看首页
+  if (text.includes('反爬体检') && text.includes('搜索探测')) {
+    const probeLine = text.split('\n').find((l) => l.startsWith('搜索探测')) ?? ''
+    const mintLine = text.split('\n').find((l) => l.startsWith('解算耗时')) ?? ''
+    ok('状态命令可用', probeLine)
+    // 解算耗时是「免费版 CPU 够不够」的唯一依据，必须报出来
+    if (mintLine) ok('报出了解算耗时', mintLine.replace('解算耗时：', ''))
+    else bad('没有解算耗时——免费版 10ms CPU 的判断依据缺失')
+    if (text.includes('✅ 正常')) ok('搜索探测通过')
+    else bad('搜索探测没通过，看上面那行')
+  } else {
+    bad('状态命令异常', text.slice(0, 300))
+  }
 }
 
 section('14. 入群欢迎语')

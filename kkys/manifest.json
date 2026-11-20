@@ -20,12 +20,12 @@
     },
     {
       "name": "看剧 状态",
-      "description": "查看反爬凭证状态",
+      "description": "反爬体检",
       "permission": "bot_admin"
     },
     {
       "name": "看剧 刷新",
-      "description": "强制重破反爬、刷新凭证",
+      "description": "验证反爬链路",
       "permission": "bot_admin"
     },
     {
@@ -98,7 +98,7 @@
         "title": "手动 Cookie（应急）",
         "default": "",
         "writeOnly": true,
-        "description": "留空即自动破解反爬。站点改了挑战页格式、自动破解失效时，从浏览器复制 `cdndefend_js_cookie=...` 填进来应急"
+        "description": "留空即自动破解反爬。**注意：cdndefend 的 cookie 是一次性的**（解出来几秒后就失效），从浏览器复制的那条通常已经用过、直接就是失效状态。留空更可靠——自动破解虽然费 CPU，但每次都是新鲜的。填了失效值也不会卡死：拦截时会自动退回自动破解"
       }
     }
   },

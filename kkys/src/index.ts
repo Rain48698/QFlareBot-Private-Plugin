@@ -31,10 +31,31 @@ const SKIP_LINE_KEYWORDS = ['4k']
 const PLAY_URL_TTL_SECONDS: number | null = null
 /** PoW 穷举上限：期望 65536 次命中，100 万次没命中就说明挑战格式变了 */
 const POW_MAX_TRIES = 1_000_000
+// ---------------------------------------------------------------------------
+// 凭证（cdndefend）
+// ---------------------------------------------------------------------------
+
+/**
+ * 凭证**不持久化**。这是本插件最重要的设计约束，实测依据：
+ *
+ * 同一个 cookie 解出来之后，立刻请求 → 200；**等 5 秒再请求同一个 cookie → 850**。
+ * 站点侧对 `cdndefend_js_cookie` 做了「一次性 / 极短时效」校验，而且挑战值 `c`
+ * 也会轮换（连续请求首页时同一 IP 上会从 A 变成 B）。
+ *
+ * 于是「解一次、存 KV、12 小时内复用」这条路必然失败：第一次用成功（`/看剧 刷新`
+ * 报「凭证已刷新」），之后所有请求都 850（`/看剧 状态` 报「Cookie 无效」）。
+ *
+ * 正确做法是**每次业务流程现解现用**：一次事件内解一次，把同一凭证连续用在这个
+ * 流程的几步上（实测 搜索 → 详情 → 播放 三步连续请求全部 200）。跨事件不复用。
+ *
+ * 单次解算成本：几万次 SHA-1，实测 15–25 ms。免费版 Worker 单次 CPU 只有 10 ms，
+ * 所以这一步在免费版会超，付费版（30 s）没问题——README 里有说明。
+ */
 const CREDS_KEY = 'creds'
-const CREDS_TTL_SECONDS = 12 * 3600
-/** 凭证多久内认为还新鲜、不必再请求首页确认 */
-const CREDS_FRESH_MS = 20 * 60 * 1000
+/** 仅在「同一次事件内」复用凭证；跨事件不读。设成秒级，避免残留数据被误用 */
+const CREDS_TTL_SECONDS = 60
+/** 同一次事件内认为还新鲜的窗口（一次事件最多 30 秒，所以 5 秒足够宽松） */
+const CREDS_FRESH_MS = 5_000
 const SESSION_TTL_SECONDS = 30 * 60
 const HTTP_TIMEOUT_MS = 15_000
 const HOMEPAGE_TIMEOUT_MS = 20_000
@@ -627,9 +648,20 @@ export function createKkys(runtime: KkysRuntime) {
     }
   }
 
+  /**
+   * 只在**同一次事件内**复用凭证；跨事件一律不读 KV。
+   *
+   * 为什么要读 KV 兜底：`search` / `detail` / `playUrl` 在同一个处理器里会依次调用，
+   * 每次都重新解 PoW 就白花 CPU；而实测同一凭证可以在几秒内连续用于
+   * 搜索 → 详情 → 播放（三步全部 200）。所以按「客户端实例 + 5 秒窗口」复用。
+   * 超过窗口或换事件，KV 里的那条要么过期、要么已经失效，不能再用。
+   */
   async function loadCreds(): Promise<Creds | null> {
     try {
-      return await kv.getJSON<Creds>(CREDS_KEY)
+      const cached = await kv.getJSON<Creds>(CREDS_KEY)
+      // 只认「刚刚解的」：跨事件读到的一定是上一轮残留的一次性凭证，用了必 850
+      if (!cached || !cached.t || Date.now() - cached.ts > CREDS_FRESH_MS) return null
+      return cached
     } catch (e) {
       logger.warn('读取凭证失败', { error: String(e) })
       return null
@@ -678,11 +710,15 @@ export function createKkys(runtime: KkysRuntime) {
 
   /**
    * 确保 Cookie 与 t 参数就绪。只发一次首页请求：同一个响应既用来判断是否需要
-   * 挑战，也用来提取 t 参数。凭证新鲜时直接返回缓存，不发请求。
+   * 挑战，也用来提取 t 参数。
+   *
+   * **凭证是一次性的**：解出来的 cookie 只能用很短的时间/次数，跨事件复用必然 850。
+   * 所以这里的「缓存」只覆盖同一次事件内的几次连续请求（见 loadCreds 的 5 秒窗口），
+   * 拿不到新鲜凭证就重新解一次 PoW。
    */
   async function ensureReadyUncached(force: boolean): Promise<Creds | null> {
     const cached = await loadCreds()
-    if (!force && cached && cached.t && Date.now() - cached.ts < CREDS_FRESH_MS) return cached
+    if (!force && cached) return cached
 
     let cookie = config.manualCookie.trim() || cached?.cookie || ''
     let res = await httpGet(BASE_URL, cookie || null, HOMEPAGE_TIMEOUT_MS)
@@ -693,7 +729,7 @@ export function createKkys(runtime: KkysRuntime) {
         logger.error('面板里配置的手动 Cookie 也被反爬拦截了，请换一条新的')
         return null
       }
-      // 第一个首页请求的响应里就带着挑战页，直接交给 solveCookie，别再请求一遍
+      // 手动 Cookie 失效时，退回自动破解（否则一条配置错误就能让整个插件停摆）
       const solved = await solveCookie(res.text)
       if (!solved) return null
       cookie = solved
@@ -719,10 +755,9 @@ export function createKkys(runtime: KkysRuntime) {
   }
 
   /**
-   * 同一次事件里 `search` / `detail` / `playUrl` 各自都会要凭证，不缓存的话
-   * `/看剧 斗罗大陆 2` 一条命令就要读 4 次 KV、可能发 4 次首页请求。
-   * 这里按客户端实例缓存一个 Promise：一次事件只读一次 KV、只发一次首页。
-   * 失败结果也缓存（同一个事件里重试大概率还是失败），`force` 会清掉重来。
+   * 同一次事件里 `search` / `detail` / `playUrl` 各自都会要凭证。按客户端实例
+   * 缓存一个 Promise，避免一条命令重复解 PoW（一次解算 15–25 ms，免费版 CPU 只有 10 ms）。
+   * `force` 会清掉重来——**凭证失效时必须走这条路**，不能沿用旧的。
    */
   let credsCache: Promise<Creds | null> | null = null
   function ensureReady(force = false): Promise<Creds | null> {
@@ -738,20 +773,31 @@ export function createKkys(runtime: KkysRuntime) {
   }
 
   /**
-   * 请求业务页面；命中反爬时自动重新破解并重试一次。
-   * 新增请求入口一律走这里，别直接用 httpGet —— 否则反爬失败会被伪装成业务失败。
+   * 请求业务页面；命中反爬时**重新解凭证并重试**。
+   *
+   * 重试是必需品而不是保险：凭证一次性，且站点拦截有随机性，实测同一个 cookie
+   * 连续请求会出现 200 → 850 的抖动。
+   *
+   * **CPU 预算**：一次 PoW 解算 7–50 ms（实测中位 19 ms），免费版 Worker 单次只给 10 ms。
+   * 所以这里默认只重试 1 次（即最多解 2 次凭证），把最坏情况压在 ~100 ms 内；
+   * 调用方如果发现自己在一个循环里（比如试多条线路），应当把 attempts 降为 1。
    */
-  async function getProtected(url: string, timeoutMs = HTTP_TIMEOUT_MS): Promise<HttpResult> {
-    const creds = await ensureReady()
-    if (!creds) return { status: -1, text: '' }
-    let res = await httpGet(url, creds.cookie || null, timeoutMs)
-    if (res.status === -1 || !isChallenge(res.status, res.text)) return res
-
-    logger.info('命中反爬保护，重新破解后重试', { url })
-    const fresh = await ensureReady(true)
-    if (!fresh) return res
-    res = await httpGet(url, fresh.cookie || null, timeoutMs)
-    return res
+  async function getProtected(url: string, timeoutMs = HTTP_TIMEOUT_MS, attempts = 2): Promise<HttpResult> {
+    let last: HttpResult = { status: -1, text: '' }
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const creds = await ensureReady(attempt > 1)
+      if (!creds) return last
+      const res = await httpGet(url, creds.cookie || null, timeoutMs)
+      if (res.status === -1) return res // 网络问题，重试没有意义
+      if (!isChallenge(res.status, res.text)) return res
+      last = res
+      if (attempt < attempts) {
+        logger.info(`命中反爬保护，换新凭证重试（第 ${attempt} 次）`, { url })
+        // 极短间隔；时间也是 CPU 预算的一部分，不能等太久
+        await new Promise((r) => setTimeout(r, 120))
+      }
+    }
+    return last
   }
 
   function searchUrl(t: string, keyword: string): string {
@@ -760,8 +806,11 @@ export function createKkys(runtime: KkysRuntime) {
 
   /**
    * 搜索。返回 null 表示请求失败（网络/反爬/HTTP 错误），[] 表示确实没有结果。
-   * 结果为空时强制重取一次 t 参数再试：t 会单独过期，此时站点返回 200 + 空列表，
-   * 光看状态码分不出来（见 kkys_py/README.md 6.1）。
+   *
+   * 两个已知的「非错误」空结果来源：
+   *  1. `t` 参数单独过期——站点返回 200 + 空列表，光看状态码分不出来（见 kkys_py/README.md 6.1）；
+   *  2. 凭证失效——由 getProtected 内部重试处理。
+   * 所以拿到空列表时强制换一套新凭证再搜一次，还空才算真的没有。
    */
   async function search(keyword: string, filterIrrelevant = config.filterIrrelevant): Promise<SearchResult[] | null> {
     const creds = await ensureReady()
@@ -769,7 +818,7 @@ export function createKkys(runtime: KkysRuntime) {
     let res = await getProtected(searchUrl(creds.t, keyword))
     if (res.status === -1) return null
     if (isChallenge(res.status, res.text)) {
-      logger.error('反爬校验未通过，搜索失败')
+      logger.error('反爬校验未通过，搜索失败（已重试）')
       return null
     }
     if (res.status !== 200) {
@@ -779,6 +828,7 @@ export function createKkys(runtime: KkysRuntime) {
 
     let results = parseSearchResults(res.text)
     if (results.length === 0) {
+      // t 过期时站点给 200 + 空列表；换新凭证（连带新 t）再试一次
       const fresh = await ensureReady(true)
       if (fresh) {
         res = await getProtected(searchUrl(fresh.t, keyword))
@@ -802,8 +852,16 @@ export function createKkys(runtime: KkysRuntime) {
     return parseDetail(res.text, detailUrl)
   }
 
-  async function playUrl(episodeUrl: string): Promise<string | null> {
-    const res = await getProtected(episodeUrl)
+  /**
+   * 取播放直链。
+   *
+   * `attempts` 交给调用方控制：`/看剧片名 集数` 会在多条线路间循环（最多 5 条），
+   * 每条都调这里。如果每条都允许重解凭证，最坏 5 × 2 × 19 ms ≈ 190 ms 纯 CPU，
+   * 免费版 10 ms 直接被掐断。循环里调用时传 1（不重试，失败就换下一条线路），
+   * 单次调用（选某个剧集按键）用默认 2。
+   */
+  async function playUrl(episodeUrl: string, attempts = 2): Promise<string | null> {
+    const res = await getProtected(episodeUrl, HTTP_TIMEOUT_MS, attempts)
     if (res.status === -1) return null
     if (isChallenge(res.status, res.text)) {
       logger.error('反爬校验未通过，无法获取播放链接')
@@ -816,15 +874,27 @@ export function createKkys(runtime: KkysRuntime) {
     return extractPlayUrl(res.text)
   }
 
-  /** 首页连通性 + 凭证状态，给 /看剧 状态 用 */
-  async function status(): Promise<{
+  /**
+   * 真实体检：/看剧 状态 用。
+   *
+   * **不再只看首页**。凭证是一次性的，首页 200 只说明「刚刚解出来的这条能用」，
+   * 说明不了「现在能不能搜片」。所以这里现解一套凭证，然后真的请求一次搜索页，
+   * 把结果如实报出来——这正是之前 `/看剧 刷新` 报成功、实际用不了的原因。
+   */
+  async function status(keyword = '测试'): Promise<{
     cookieLength: number
     manualCookie: boolean
     t: string | null
     fresh: boolean
     homepage: { status: number; kind: 'ok' | 'challenge' | 'http-error' | 'network-error' }
+    probe: { status: number; kind: 'ok' | 'challenge' | 'http-error' | 'network-error' | 'skipped'; results: number }
+    /** 解一次凭证花的时间（毫秒），用来判断免费版 CPU 会不会超 */
+    mintMs: number
   }> {
-    const creds = await loadCreds()
+    const startedAt = Date.now()
+    const creds = await ensureReady(true)
+    const mintMs = Date.now() - startedAt
+
     const cookie = config.manualCookie.trim() || creds?.cookie || ''
     const res = await httpGet(BASE_URL, cookie || null, HOMEPAGE_TIMEOUT_MS)
     let kind: 'ok' | 'challenge' | 'http-error' | 'network-error'
@@ -832,12 +902,30 @@ export function createKkys(runtime: KkysRuntime) {
     else if (isChallenge(res.status, res.text)) kind = 'challenge'
     else if (res.status === 200) kind = 'ok'
     else kind = 'http-error'
+
+    // 真打一次搜索：这才是插件实际要用的路径
+    let probe: { status: number; kind: 'ok' | 'challenge' | 'http-error' | 'network-error' | 'skipped'; results: number } = {
+      status: 0,
+      kind: 'skipped',
+      results: 0,
+    }
+    if (creds) {
+      const r = await httpGet(searchUrl(creds.t, keyword), creds.cookie || null, HTTP_TIMEOUT_MS)
+      const n = r.status === 200 ? parseSearchResults(r.text).length : 0
+      if (r.status === -1) probe = { status: -1, kind: 'network-error', results: 0 }
+      else if (isChallenge(r.status, r.text)) probe = { status: r.status, kind: 'challenge', results: 0 }
+      else if (r.status === 200) probe = { status: 200, kind: 'ok', results: n }
+      else probe = { status: r.status, kind: 'http-error', results: 0 }
+    }
+
     return {
       cookieLength: cookie.length,
       manualCookie: config.manualCookie.trim().length > 0,
       t: creds?.t ?? null,
       fresh: creds ? Date.now() - creds.ts < CREDS_FRESH_MS : false,
       homepage: { status: res.status, kind },
+      probe,
+      mintMs,
     }
   }
 
@@ -1178,7 +1266,9 @@ export default definePlugin<Config>({
         default: '',
         writeOnly: true,
         description:
-          '留空即自动破解反爬。站点改了挑战页格式、自动破解失效时，从浏览器复制 `cdndefend_js_cookie=...` 填进来应急',
+          '留空即自动破解反爬。**注意：cdndefend 的 cookie 是一次性的**（解出来几秒后就失效），' +
+          '从浏览器复制的那条通常已经用过、直接就是失效状态。留空更可靠——自动破解虽然费 CPU，' +
+          '但每次都是新鲜的。填了失效值也不会卡死：拦截时会自动退回自动破解',
       },
     },
   },
@@ -1242,7 +1332,9 @@ export default definePlugin<Config>({
           tried += 1
           const episode = pickEpisode(line.episodes, epNumber)
           if (!episode) continue
-          const url = await client.playUrl(episode.url)
+          // attempts=1：循环里不重解凭证，失败就换下一条线路。
+          // 每条都重解的话最坏 5×2×19ms 纯 CPU，免费版直接超限。
+          const url = await client.playUrl(episode.url, 1)
           if (isValidPlayUrl(url)) {
             resolved = { line, episode, playUrl: url as string }
             break
@@ -1289,44 +1381,68 @@ export default definePlugin<Config>({
     },
 
     '看剧 状态': {
-      description: '查看反爬凭证状态',
+      description: '反爬体检',
       permission: 'bot_admin',
       async handler({ ctx }) {
         const client = createKkys({ kv: ctx.kv, logger: ctx.logger, config: ctx.config, fetch })
         const st = await client.status()
         const home = st.homepage
-        const conclusion =
-          home.kind === 'ok'
-            ? '✅ Cookie 有效'
-            : home.kind === 'challenge'
-              ? '⚠️ Cookie 无效/过期，下次请求会自动重破'
-              : home.kind === 'network-error'
-                ? '❌ 请求失败（网络问题，不是反爬也不是 Cookie 失效）'
-                : `❌ 站点返回 HTTP ${home.status}（不是反爬问题，可能是服务端故障）`
+        const probe = st.probe
+        // 结论以「搜索能不能通」为准——首页 200 只说明刚解出来的那条能过首页，
+        // 不说明能搜片。之前正是只看首页才误报「凭证已刷新」然后全都用不了。
+        const verdict =
+          probe.kind === 'ok'
+            ? `✅ 正常，搜索「测试」拿到 ${probe.results} 条结果`
+            : probe.kind === 'challenge'
+              ? '❌ 搜索仍被反爬拦截（已自动重试 3 轮）。免费版 CPU 可能不足以支撑 PoW，或站点策略变了'
+              : probe.kind === 'network-error'
+                ? '❌ 请求失败（网络问题，不是反爬）'
+                : probe.kind === 'skipped'
+                  ? '⚠️ 没拿到凭证，搜索未测试'
+                  : `❌ 搜索返回 HTTP ${probe.status}`
         return [
-          '📊 可可影视凭证状态',
-          `Cookie：${st.cookieLength > 0 ? `已设置（${st.cookieLength} 字符${st.manualCookie ? '，来自面板手动配置' : ''}）` : '未设置'}`,
-          `t 参数：${st.t ? `已设置（${st.t}）` : '未设置'}`,
-          `缓存：${st.fresh ? '新鲜，20 分钟内不再请求首页' : '已过期，下次请求会重新获取'}`,
+          '📊 可可影视反爬体检',
+          `凭证来源：${st.manualCookie ? '面板手动 Cookie（失效时自动回退到自动破解）' : '自动破解 cdndefend'}`,
+          `解算耗时：${st.mintMs} ms（免费版单次 CPU 上限 10 ms，超了会被平台掐断）`,
+          `Cookie 长度：${st.cookieLength} 字符`,
+          `t 参数：${st.t ?? '未取到'}`,
           `首页：HTTP ${home.status}`,
-          `结论：${conclusion}`,
+          `搜索探测：${probe.kind === 'skipped' ? '跳过' : `HTTP ${probe.status}，${probe.results} 条结果`}`,
+          `结论：${verdict}`,
+          '',
+          '💡 凭证是一次性的：解出来后只能用很短时间，插件每次操作都会现解。' +
+            '看到「解算耗时」超过 10 ms 说明这台机器人跑在免费版上，容易超 CPU。',
         ].join('\n')
       },
     },
 
     '看剧 刷新': {
-      description: '强制重破反爬、刷新凭证',
+      description: '验证反爬链路',
       permission: 'bot_admin',
       async handler({ ctx }) {
         const client = createKkys({ kv: ctx.kv, logger: ctx.logger, config: ctx.config, fetch })
         const started = Date.now()
-        const creds = await client.ensureReady(true)
-        if (!creds) return '❌ 刷新失败：破解反爬或首页请求没通过，看日志里是哪一种'
+        // 刷新不能只看首页：直接跑一次真实搜索，通了才算刷新成功
+        const results = await client.search('测试')
+        const ms = Date.now() - started
+        if (results === null) {
+          return [
+            '❌ 刷新失败：现解凭证后仍然搜不通',
+            `耗时：${ms} ms`,
+            '',
+            '可能原因：',
+            '  · 免费版 Worker 的 10 ms CPU 不够跑 PoW——把机器人升级到付费版',
+            '  · 站点改了挑战页格式——发 /看剧 状态 看解算耗时和首页状态',
+            '  · 面板里的「手动 Cookie」填了失效值——清空它，让插件自动破解',
+          ].join('\n')
+        }
         return [
-          '✅ 凭证已刷新',
-          `Cookie：${creds.cookie.slice(0, 60)}${creds.cookie.length > 60 ? '…' : ''}`,
-          `t 参数：${creds.t}`,
-          `耗时：${Date.now() - started} ms`,
+          '✅ 刷新成功（已用真实搜索验证）',
+          `搜索「测试」拿到 ${results.length} 条结果`,
+          `耗时：${ms} ms`,
+          '',
+          '注意：cdndefend 的凭证是一次性的，插件每次操作都会现解一次，' +
+            '所以「刷新」本身不需要你手动做——搜不通时会自动重解 3 轮。',
         ].join('\n')
       },
     },
