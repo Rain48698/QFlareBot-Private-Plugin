@@ -109,7 +109,7 @@ node ../scripts/check-manifest.mjs .
 面板「插件 → 安装插件」粘贴（`#` 后面是子目录）：
 
 ```
-git:Rain48698/QFlareBot-Private-Plugin@99a71adf2f4a7f4031633a7af47f26133474c77b#kkys
+git:Rain48698/QFlareBot-Private-Plugin@ed2ab41e368d474ae7493a0c610b66390b337cc2#kkys
 ```
 
 仓库根的 [README](../README.md) 里有这条链接的最新版本——改代码推上去之后跑
