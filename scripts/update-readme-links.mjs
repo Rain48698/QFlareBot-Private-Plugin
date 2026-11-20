@@ -86,14 +86,34 @@ function resolveSha() {
   }
 }
 
+/**
+ * 这个 sha 指向的那次提交里，插件子目录的内容与 HEAD 是否一致。
+ *
+ * 不能直接比 `linkSha === HEAD`——改链接本身会产生一个新提交，链接于是永远比 HEAD 慢一个，
+ * 追不上自己。真正要保证的是「用户装到的代码和仓库当前的一样」，判据是子目录的 git tree 相同：
+ * 只改了 README / CI 的提交不会让链接失效，改了插件源码才会。
+ */
+function subdirUnchanged(sha, subdir) {
+  const treeOf = (rev) => {
+    try {
+      return execFileSync('git', ['rev-parse', `${rev}:${subdir}`], { cwd: repoRoot, encoding: 'utf8' }).trim()
+    } catch {
+      return null
+    }
+  }
+  const atSha = treeOf(sha)
+  const atHead = treeOf('HEAD')
+  if (!atSha || !atHead) return false
+  return atSha === atHead
+}
+
 function main() {
   const files = readmeFiles()
   const sha = resolveSha()
 
   const scanned = files.map((path) => {
     const original = readFileSync(path, 'utf8')
-    const links = [...original.matchAll(LINK)]
-    return { path, original, links, updated: original.replace(LINK, (_all, repo, _old, tail) => `git:${repo}@${sha}${tail}`) }
+    return { path, original, links: [...original.matchAll(LINK)] }
   })
 
   const total = scanned.reduce((n, f) => n + f.links.length, 0)
@@ -109,26 +129,36 @@ function main() {
     if (file.links.length === 0) continue
     console.log(`  ${file.path.replace(repoRoot, '.')}`)
     for (const m of file.links) {
-      const fresh = m[2] === sha
-      if (!fresh) staleCount += 1
-      console.log(`    #${m[3].slice(1)}：${fresh ? '已是最新' : `${m[2].slice(0, 12)}… → ${sha.slice(0, 12)}…`}`)
+      const subdir = m[3].slice(1)
+      const same = subdirUnchanged(m[2], subdir)
+      if (!same) staleCount += 1
+      const target = m[2] === sha ? '本地 HEAD（那次提交还没推上去）' : `${sha.slice(0, 12)}…`
+      console.log(
+        `    #${subdir}：${same ? `插件代码已是当前版本（链接停在 ${m[2].slice(0, 12)}…）` : `子目录有改动，应指向 ${target}`}`,
+      )
     }
   }
 
   if (staleCount === 0) {
-    console.log('安装链接都是最新的，无需改动')
+    console.log('安装链接指向的插件代码都是当前版本，无需改动')
     process.exit(0)
   }
   if (checkOnly) {
-    console.error(`✗ 有 ${staleCount} 条安装链接过期——运行 node scripts/update-readme-links.mjs`)
+    console.error(`✗ 有 ${staleCount} 条安装链接指向旧的插件代码——运行 node scripts/update-readme-links.mjs`)
     process.exit(1)
   }
 
+  let rewritten = 0
   for (const file of scanned) {
-    if (file.original === file.updated) continue
-    writeFileSync(file.path, file.updated, 'utf8')
+    // 只给「子目录真的变了」的链接换 sha，其余原样留着（少制造无意义 diff）
+    const next = file.original.replace(LINK, (all, repo, old, tail) =>
+      subdirUnchanged(old, tail.slice(1)) ? all : `git:${repo}@${sha}${tail}`,
+    )
+    if (next === file.original) continue
+    writeFileSync(file.path, next, 'utf8')
+    rewritten += 1
   }
-  console.log(`✓ 已改写 ${staleCount} 条安装链接，记得和其他改动一起提交`)
+  console.log(`✓ 已更新 ${rewritten} 个 README 里的安装链接，记得和其他改动一起提交`)
 }
 
 try {

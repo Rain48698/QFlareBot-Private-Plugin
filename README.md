@@ -23,7 +23,7 @@
 
 <!-- 下面的 sha 由 scripts/update-readme-links.mjs 在每次提交后自动改写 -->
 ```
-git:Rain48698/QFlareBot-Private-Plugin@11d4be42d647701798fb52f50cc49061e1fc4d1c#kkys
+git:Rain48698/QFlareBot-Private-Plugin@99a71adf2f4a7f4031633a7af47f26133474c77b#kkys
 ```
 
 安装记录钉在这个 commit 上，往仓库推新代码**不会自动生效**——要更新去面板「已装插件 → 检查全部更新」。
