@@ -23,7 +23,7 @@
 
 <!-- 下面的 sha 由 scripts/update-readme-links.mjs 在每次提交后自动改写 -->
 ```
-git:Rain48698/QFlareBot-Private-Plugin@20a501b2f4bcc8d13b792bd6054c77227c82d1e0#kkys
+git:Rain48698/QFlareBot-Private-Plugin@11d4be42d647701798fb52f50cc49061e1fc4d1c#kkys
 ```
 
 安装记录钉在这个 commit 上，往仓库推新代码**不会自动生效**——要更新去面板「已装插件 → 检查全部更新」。
@@ -147,7 +147,13 @@ README 里 kkys 的安装链接带 40 位 sha，推完代码要跟着改，否�
 node scripts/update-readme-links.mjs
 ```
 
-它会读 `git ls-remote origin refs/heads/main`，把每个插件小节里的 `@<40 位 sha>#<子目录>` 改写成当前 HEAD，然后提示你提交这一处改动。（脚本不改远程、不提交，只改文件。）
+它会读 `git ls-remote origin refs/heads/main`，把根目录和每个插件子目录 README 里的
+`@<40 位 sha>#<子目录>` 一起改写成当前 HEAD，然后提示你提交这一处改动。
+加 `--check` 只检查不改，过期时退出码 1，可以挂进 CI 拦住「推了代码忘了更新链接」。
+（脚本不改远程、不提交。）
+
+**注意顺序**：先 `git push`，再跑这个脚本，再提交这一次 README 改动。
+反过来做的话脚本改到的是推送前的 HEAD，链接照样差一个 commit。
 
 ## 7. 提交推送
 
