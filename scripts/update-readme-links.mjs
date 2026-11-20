@@ -87,23 +87,45 @@ function resolveSha() {
 }
 
 /**
- * 这个 sha 指向的那次提交里，插件子目录的内容与 HEAD 是否一致。
+ * 这个 sha 指向的那次提交里，插件子目录的**代码**与 HEAD 是否一致。
  *
- * 不能直接比 `linkSha === HEAD`——改链接本身会产生一个新提交，链接于是永远比 HEAD 慢一个，
- * 追不上自己。真正要保证的是「用户装到的代码和仓库当前的一样」，判据是子目录的 git tree 相同：
- * 只改了 README / CI 的提交不会让链接失效，改了插件源码才会。
+ * 两个坑，都踩过：
+ *
+ * 1. 不能直接比 `linkSha === HEAD`——改链接本身会产生一个新提交，链接永远比 HEAD 慢一个，追不上自己。
+ * 2. 也不能比整个子目录的 tree：安装链接就写在 `<插件>/README.md` 里，改链接即改变子目录内容，
+ *    于是「链接旧 → 改 README → 子目录变了 → 链接又旧」，死循环。
+ *
+ * 所以只比**会影响安装结果的**文件：`git ls-tree -r` 列出每个 blob 的哈希，去掉 README.md 之类的
+ * 纯文档，剩下的（src/、package.json、manifest.json、lockfile…）逐字节一致才算最新。
  */
-function subdirUnchanged(sha, subdir) {
-  const treeOf = (rev) => {
-    try {
-      return execFileSync('git', ['rev-parse', `${rev}:${subdir}`], { cwd: repoRoot, encoding: 'utf8' }).trim()
-    } catch {
-      return null
-    }
+const NOT_CODE = /(^|\/)(README\.md|\.gitignore)$/i
+
+function codeTree(rev, subdir) {
+  try {
+    const out = execFileSync('git', ['ls-tree', '-r', `${rev}:${subdir}`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+    return out
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        // <mode> SP <type> SP <object> TAB <path>
+        const [meta, path] = line.split('\t')
+        return { object: (meta ?? '').split(/\s+/)[2] ?? '', path: path ?? '' }
+      })
+      .filter((e) => e.path && !NOT_CODE.test(e.path))
+      .map((e) => `${e.object} ${e.path}`)
+      .join('\n')
+  } catch {
+    return null
   }
-  const atSha = treeOf(sha)
-  const atHead = treeOf('HEAD')
-  if (!atSha || !atHead) return false
+}
+
+function subdirUnchanged(sha, subdir) {
+  const atSha = codeTree(sha, subdir)
+  const atHead = codeTree('HEAD', subdir)
+  if (atSha === null || atHead === null) return false
   return atSha === atHead
 }
 
